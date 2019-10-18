@@ -1,5 +1,10 @@
 package com.adobe.jenkins.github_pr_comment_build;
 
+import static com.google.common.collect.Sets.immutableEnumSet;
+import static org.kohsuke.github.GHEvent.ISSUE_COMMENT;
+
+import java.io.IOException;
+import java.util.List;
 import java.util.Set;
 import java.util.logging.Level;
 import java.util.logging.Logger;
@@ -7,24 +12,30 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 import com.cloudbees.jenkins.GitHubRepositoryName;
+import com.cloudbees.plugins.credentials.CredentialsProvider;
+import com.cloudbees.plugins.credentials.common.StandardUsernamePasswordCredentials;
+import com.cloudbees.plugins.credentials.domains.DomainRequirement;
+
+import org.acegisecurity.Authentication;
+import org.jenkinsci.plugins.github.extension.GHEventsSubscriber;
+import org.jenkinsci.plugins.github_branch_source.GitHubSCMSource;
+import org.kohsuke.github.GHEvent;
+import org.kohsuke.github.GitHubBuilder;
+
 import hudson.Extension;
 import hudson.model.CauseAction;
 import hudson.model.Item;
 import hudson.model.Job;
 import hudson.security.ACL;
+import hudson.util.Secret;
 import jenkins.branch.BranchProperty;
 import jenkins.branch.MultiBranchProject;
+import jenkins.model.Jenkins;
 import jenkins.model.ParameterizedJobMixIn;
 import jenkins.scm.api.SCMSource;
 import jenkins.scm.api.SCMSourceOwner;
 import jenkins.scm.api.SCMSourceOwners;
 import net.sf.json.JSONObject;
-import org.jenkinsci.plugins.github.extension.GHEventsSubscriber;
-import org.jenkinsci.plugins.github_branch_source.GitHubSCMSource;
-import org.kohsuke.github.GHEvent;
-
-import static com.google.common.collect.Sets.immutableEnumSet;
-import static org.kohsuke.github.GHEvent.ISSUE_COMMENT;
 
 /**
  * This subscriber manages {@link org.kohsuke.github.GHEvent} ISSUE_COMMENT.
@@ -91,7 +102,6 @@ public class IssueCommentGHEventSubscriber extends GHEventsSubscriber {
         }
 
         final String pullRequestId = matcher.group(1);
-        final Pattern pullRequestJobNamePattern = Pattern.compile("^PR-" + pullRequestId + "\\b.*$", Pattern.CASE_INSENSITIVE);
 
         // Verify that the comment body matches the trigger build string
         final String commentBody = json.getJSONObject("comment").getString("body");
@@ -130,56 +140,66 @@ public class IssueCommentGHEventSubscriber extends GHEventsSubscriber {
                             continue;
                         }
                         GitHubSCMSource gitHubSCMSource = (GitHubSCMSource) source;
-                        if (gitHubSCMSource.getRepoOwner().equalsIgnoreCase(changedRepository.getUserName()) &&
+                        String botCred = gitHubSCMSource.getCredentialsId();
+                        String pullReqBranchName = "";
+                        if (pullReqBranchName.isEmpty()) {
+                            try {
+                                List<StandardUsernamePasswordCredentials> creds = CredentialsProvider.lookupCredentials(
+                                        StandardUsernamePasswordCredentials.class, Jenkins.getInstance(),
+                                        (Authentication) null, (DomainRequirement) null);
+
+                                Secret botToken = null;
+                                for (StandardUsernamePasswordCredentials c : creds) {
+                                    if (c.getId().contentEquals(botCred)) {
+                                        botToken = c.getPassword();
+                                    }
+                                }
+                                if (botToken == null) {
+                                    continue;
+                                }
+                                pullReqBranchName = new GitHubBuilder().withEndpoint("https://api.github.com")
+                                        .withOAuthToken(botToken.getPlainText()).build()
+                                        .getRepository(changedRepository.getUserName() + "/"
+                                                + changedRepository.getRepositoryName())
+                                        .getPullRequest(Integer.parseInt(pullRequestId)).getHead().getRef();
+                            } catch (NumberFormatException | IOException e) {
+                                // TODO Auto-generated catch block
+                                e.printStackTrace();
+                                continue;
+                            }
+                        }
+
+                        if (gitHubSCMSource.getRepoOwner().equalsIgnoreCase(changedRepository.getUserName()) && 
                                 gitHubSCMSource.getRepository().equalsIgnoreCase(changedRepository.getRepositoryName())) {
                             for (Job<?, ?> job : owner.getAllJobs()) {
-                                if (pullRequestJobNamePattern.matcher(job.getName()).matches()) {
+                                if (pullReqBranchName.contentEquals(job.getName())) {
                                     if (!(job.getParent() instanceof MultiBranchProject)) {
                                         continue;
                                     }
-                                    boolean propFound = false;
-                                    for (BranchProperty prop : ((MultiBranchProject) job.getParent()).getProjectFactory().
-                                            getBranch(job).getProperties()) {
-                                        if (!(prop instanceof TriggerPRCommentBranchProperty)) {
-                                            continue;
-                                        }
-                                        propFound = true;
-                                        String expectedCommentBody = ((TriggerPRCommentBranchProperty) prop).getCommentBody();
-                                        Pattern pattern = Pattern.compile(expectedCommentBody,
-                                                Pattern.CASE_INSENSITIVE | Pattern.DOTALL);
-                                        if (commentBody == null || pattern.matcher(commentBody).matches()) {
-                                            ParameterizedJobMixIn.scheduleBuild2(job, 0,
-                                                    new CauseAction(new GitHubPullRequestCommentCause(commentUrl)));
-                                            LOGGER.log(Level.FINE,
-                                                    "Triggered build for {0} due to PR comment on {1}:{2}/{3}",
-                                                    new Object[] {
-                                                            job.getFullName(),
-                                                            changedRepository.getHost(),
-                                                            changedRepository.getUserName(),
-                                                            changedRepository.getRepositoryName()
-                                                    }
-                                            );
-                                        } else {
-                                            LOGGER.log(Level.FINER,
-                                                    "Issue comment does not match the trigger build string ({0}) for {1}",
-                                                    new Object[] { expectedCommentBody, job.getFullName() }
-                                            );
-                                        }
-                                        break;
+                                    BranchProperty prop = ((MultiBranchProject) job.getParent()).getProjectFactory()
+                                            .getBranch(job).getProperty(TriggerPRCommentBranchProperty.class);
+                                    if (prop == null) {
+                                        continue;
                                     }
-
-                                    if (!propFound) {
+                                    LOGGER.log(Level.FINE, "Comment on Pull Request {0} for branch {1}.",
+                                            new Object[] { pullRequestId, pullReqBranchName });
+                                    String expectedCommentBody = ((TriggerPRCommentBranchProperty) prop)
+                                            .getCommentBody();
+                                    Pattern pattern = Pattern.compile(expectedCommentBody,
+                                            Pattern.CASE_INSENSITIVE | Pattern.DOTALL);
+                                    if (commentBody == null || pattern.matcher(commentBody).matches()) {
+                                        ParameterizedJobMixIn.scheduleBuild2(job, 0,
+                                                new CauseAction(new GitHubPullRequestCommentCause(commentUrl)));
                                         LOGGER.log(Level.FINE,
-                                                "Job {0} for {1}:{2}/{3} does not have a trigger PR comment branch property",
-                                                new Object[] {
-                                                        job.getFullName(),
-                                                        changedRepository.getHost(),
+                                                "Triggered build for {0} due to PR comment on {1}:{2}/{3}",
+                                                new Object[] { job.getFullName(), changedRepository.getHost(),
                                                         changedRepository.getUserName(),
-                                                        changedRepository.getRepositoryName()
-                                                }
-                                        );
+                                                        changedRepository.getRepositoryName() });
+                                    } else {
+                                        LOGGER.log(Level.FINER,
+                                                "Issue comment does not match the trigger build string ({0}) for {1}",
+                                                new Object[] { expectedCommentBody, job.getFullName() });
                                     }
-
                                     jobFound = true;
                                 }
                             }
