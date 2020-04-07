@@ -105,6 +105,10 @@ public class IssueCommentGHEventSubscriber extends GHEventsSubscriber {
 
         // Verify that the comment body matches the trigger build string
         final String commentBody = json.getJSONObject("comment").getString("body");
+        if (!commentBody.startsWith(":")) {
+            LOGGER.log(Level.FINER, "Comment doesn't start with a colon(:). Ignoring....comment ({0}) for PR {1}", new Object[] { commentBody, issueUrl });
+            return;
+        } 
         final String commentUrl = json.getJSONObject("comment").getString("html_url");
 
         // Make sure the action is edited or created (not deleted)
