@@ -146,35 +146,35 @@ public class IssueCommentGHEventSubscriber extends GHEventsSubscriber {
                         GitHubSCMSource gitHubSCMSource = (GitHubSCMSource) source;
                         String botCred = gitHubSCMSource.getCredentialsId();
                         String pullReqBranchName = "";
-                        if (pullReqBranchName.isEmpty()) {
-                            try {
-                                List<StandardUsernamePasswordCredentials> creds = CredentialsProvider.lookupCredentials(
-                                        StandardUsernamePasswordCredentials.class, Jenkins.getInstance(),
-                                        (Authentication) null, (DomainRequirement) null);
-
-                                Secret botToken = null;
-                                for (StandardUsernamePasswordCredentials c : creds) {
-                                    if (c.getId().contentEquals(botCred)) {
-                                        botToken = c.getPassword();
+                        
+                        if (gitHubSCMSource.getRepoOwner().equalsIgnoreCase(changedRepository.getUserName()) && 
+                        gitHubSCMSource.getRepository().equalsIgnoreCase(changedRepository.getRepositoryName())) {
+                            if (pullReqBranchName.isEmpty()) {
+                                try {
+                                    List<StandardUsernamePasswordCredentials> creds = CredentialsProvider.lookupCredentials(
+                                            StandardUsernamePasswordCredentials.class, Jenkins.getInstance(),
+                                            (Authentication) null, (DomainRequirement) null);
+    
+                                    Secret botToken = null;
+                                    for (StandardUsernamePasswordCredentials c : creds) {
+                                        if (c.getId().contentEquals(botCred)) {
+                                            botToken = c.getPassword();
+                                        }
                                     }
-                                }
-                                if (botToken == null) {
+                                    if (botToken == null) {
+                                        continue;
+                                    }
+                                    pullReqBranchName = new GitHubBuilder().withEndpoint("https://api.github.com")
+                                            .withOAuthToken(botToken.getPlainText()).build()
+                                            .getRepository(changedRepository.getUserName() + "/"
+                                                    + changedRepository.getRepositoryName())
+                                            .getPullRequest(Integer.parseInt(pullRequestId)).getHead().getRef();
+                                } catch (NumberFormatException | IOException e) {
+                                    // TODO Auto-generated catch block
+                                    e.printStackTrace();
                                     continue;
                                 }
-                                pullReqBranchName = new GitHubBuilder().withEndpoint("https://api.github.com")
-                                        .withOAuthToken(botToken.getPlainText()).build()
-                                        .getRepository(changedRepository.getUserName() + "/"
-                                                + changedRepository.getRepositoryName())
-                                        .getPullRequest(Integer.parseInt(pullRequestId)).getHead().getRef();
-                            } catch (NumberFormatException | IOException e) {
-                                // TODO Auto-generated catch block
-                                e.printStackTrace();
-                                continue;
                             }
-                        }
-
-                        if (gitHubSCMSource.getRepoOwner().equalsIgnoreCase(changedRepository.getUserName()) && 
-                                gitHubSCMSource.getRepository().equalsIgnoreCase(changedRepository.getRepositoryName())) {
                             for (Job<?, ?> job : owner.getAllJobs()) {
                                 if (pullReqBranchName.contentEquals(job.getName())) {
                                     if (!(job.getParent() instanceof MultiBranchProject)) {
