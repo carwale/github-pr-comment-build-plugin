@@ -144,12 +144,13 @@ public class IssueCommentGHEventSubscriber extends GHEventsSubscriber {
                             continue;
                         }
                         GitHubSCMSource gitHubSCMSource = (GitHubSCMSource) source;
-                        String botCred = gitHubSCMSource.getCredentialsId();
+                        
                         String pullReqBranchName = "";
                         
                         if (gitHubSCMSource.getRepoOwner().equalsIgnoreCase(changedRepository.getUserName()) && 
                         gitHubSCMSource.getRepository().equalsIgnoreCase(changedRepository.getRepositoryName())) {
                             if (pullReqBranchName.isEmpty()) {
+                                String botCred = gitHubSCMSource.getCredentialsId();
                                 try {
                                     List<StandardUsernamePasswordCredentials> creds = CredentialsProvider.lookupCredentials(
                                             StandardUsernamePasswordCredentials.class, Jenkins.getInstance(),
